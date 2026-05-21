@@ -1,0 +1,4 @@
+IDObligacion,EstacionCodigo,Modulo,Nombre,Fundamento,Periodicidad,Responsable,FechaProxima,Estado,Riesgo,EvidenciaRequerida
+OBL-001,PL0001,CAP,Actualizar matriz de capacitación,DACG SASISOPA,Mensual,Administrativo,2026-05-24,Próximo,Alto,TRUE
+OBL-002,PL0002,AUD,Auditoría interna trimestral,DACG SASISOPA,Trimestral,RT,2026-05-21,Urgente,Alto,TRUE
+OBL-003,PL0004,MAN,Evidencia de mantenimiento mensual,DACG SASISOPA,Mensual,Supervisor,2026-05-19,Vencido,Alto,TRUE

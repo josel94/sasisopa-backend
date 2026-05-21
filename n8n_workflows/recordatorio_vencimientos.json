@@ -1,0 +1,35 @@
+{
+  "name": "SASISOPA - Recordatorio de vencimientos",
+  "nodes": [
+    {
+      "name": "Cron diario",
+      "type": "n8n-nodes-base.cron",
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Consultar backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "url": "http://localhost:4000/api/obligations/check-due",
+        "method": "POST"
+      }
+    }
+  ],
+  "connections": {}
+}

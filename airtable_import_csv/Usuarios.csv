@@ -1,0 +1,4 @@
+Nombre,Rol,WhatsApp,Correo,EstacionCodigo,Activo
+Responsable Técnico,RT,,,PL0001,TRUE
+Supervisor,Supervisor,,,PL0001,TRUE
+Administrativo,Administrativo,,,PL0001,TRUE
