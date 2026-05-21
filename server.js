@@ -6,12 +6,13 @@ import Airtable from "airtable";
 import twilio from "twilio";
 import OpenAI from "openai";
 import multer from "multer";
-import { google } from "googleapis";
+import fs from "fs";
+import { google } from "googleapis";  
 
 dotenv.config();
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ dest: "uploads/" });
 
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
@@ -180,6 +181,66 @@ app.post("/api/whatsapp/send-due-alert", async (req, res) => {
     res.json({ ok: true, sid: result.sid, message });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
+  try {
+    const fileMetadata = {
+      name: req.file.originalname,
+      parents: [process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
+    };
+
+    const media = {
+      mimeType: req.file.mimetype,
+      body: fs.createReadStream(req.file.path),
+    };
+
+    const driveResponse = await drive.files.create({
+      resource: fileMetadata,
+      media,
+      fields: "id",
+    });
+
+    const fileId = driveResponse.data.id;
+
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: "reader",
+        type: "anyone",
+      },
+    });
+
+    const fileUrl = `https://drive.google.com/file/d/${fileId}/view`;
+
+    await airtableBase(process.env.AIRTABLE_TABLE_EVIDENCIAS).create([
+      {
+        fields: {
+          Nombre: req.file.originalname,
+          URL: fileUrl,
+          Estacion: req.body.estacion,
+          Obligacion: req.body.obligacion,
+          Comentarios: req.body.comentarios || "",
+          Fecha: new Date().toISOString(),
+        },
+      },
+    ]);
+
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      ok: true,
+      url: fileUrl,
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
