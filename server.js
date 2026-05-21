@@ -6,28 +6,43 @@ import Airtable from "airtable";
 import twilio from "twilio";
 import OpenAI from "openai";
 import multer from "multer";
-import fs from "fs";
-import { google } from "googleapis";  
+import { google } from "googleapis";
+import { Readable } from "stream";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const app = express();
-const upload = multer({ dest: "uploads/" });
 
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 
 const PORT = process.env.PORT || 4000;
 
-const airtable = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(
-  process.env.AIRTABLE_BASE_ID
+const upload = multer({
+  storage: multer.memoryStorage(),
+});
+
+// =========================
+// CLIENTES EXTERNOS
+// =========================
+
+const airtableBase = new Airtable({
+  apiKey: process.env.AIRTABLE_API_KEY,
+}).base(process.env.AIRTABLE_BASE_ID);
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "temporal",
+});
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
+  process.env.TWILIO_ACCOUNT_SID || "AC00000000000000000000000000000000",
+  process.env.TWILIO_AUTH_TOKEN || "00000000000000000000000000000000"
 );
 
 function getDriveClient() {
@@ -37,25 +52,43 @@ function getDriveClient() {
     scopes: ["https://www.googleapis.com/auth/drive"],
   });
 
-  return google.drive({ version: "v3", auth });
+  return google.drive({
+    version: "v3",
+    auth,
+  });
 }
 
+// =========================
+// HELPERS
+// =========================
+
 function normalizeRecord(record) {
-  return { id: record.id, ...record.fields };
+  return {
+    id: record.id,
+    ...record.fields,
+  };
 }
 
 function table(name) {
-  return airtable(name);
+  return airtableBase(name);
 }
 
 async function createAirtableRecord(tableName, fields) {
-  const records = await table(tableName).create([{ fields }]);
+  const records = await table(tableName).create([
+    {
+      fields,
+    },
+  ]);
+
   return normalizeRecord(records[0]);
 }
 
 async function listAirtableRecords(tableName, filterByFormula = "") {
   const records = await table(tableName)
-    .select({ filterByFormula, maxRecords: 100 })
+    .select({
+      filterByFormula,
+      maxRecords: 100,
+    })
     .all();
 
   return records.map(normalizeRecord);
@@ -63,20 +96,38 @@ async function listAirtableRecords(tableName, filterByFormula = "") {
 
 function statusFromDueDate(dueDate) {
   if (!dueDate) return "Sin fecha";
+
   const today = new Date();
   const due = new Date(dueDate);
-  const diffDays = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+
+  const diffDays = Math.ceil(
+    (due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+  );
 
   if (diffDays < 0) return "Vencido";
   if (diffDays <= 7) return "Urgente";
   if (diffDays <= 15) return "Próximo";
+
   return "Vigente";
 }
 
 function buildWhatsAppMessage({ station, title, due, status, owner }) {
-  const emoji = status === "Vencido" ? "❌" : status === "Urgente" ? "⚠️" : "🔔";
-  return `${emoji} SASISOPA — ${station}\n\n${title}\nEstatus: ${status}\nVence: ${due}\nResponsable: ${owner}\n\nFavor de cargar evidencia o actualizar seguimiento.`;
+  const emoji =
+    status === "Vencido" ? "❌" : status === "Urgente" ? "⚠️" : "🔔";
+
+  return `${emoji} SASISOPA — ${station}
+
+${title}
+Estatus: ${status}
+Vence: ${due}
+Responsable: ${owner}
+
+Favor de cargar evidencia o actualizar seguimiento.`;
 }
+
+// =========================
+// HEALTH CHECK
+// =========================
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -87,155 +138,22 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// =========================
+// ESTACIONES
+// =========================
+
 app.get("/api/stations", async (req, res) => {
   try {
-    const records = await listAirtableRecords(process.env.AIRTABLE_TABLE_ESTACIONES);
-    res.json({ ok: true, data: records });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/stations", async (req, res) => {
-  try {
-    const station = await createAirtableRecord(process.env.AIRTABLE_TABLE_ESTACIONES, req.body);
-    res.json({ ok: true, data: station });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.get("/api/obligations", async (req, res) => {
-  try {
-    const { station } = req.query;
-    const formula = station ? `{EstacionCodigo} = '${station}'` : "";
-    const records = await listAirtableRecords(process.env.AIRTABLE_TABLE_OBLIGACIONES, formula);
-    const enriched = records.map((r) => ({
-      ...r,
-      EstadoCalculado: statusFromDueDate(r.FechaProxima || r["Fecha próxima"] || r["Fecha proxima"]),
-    }));
-    res.json({ ok: true, data: enriched });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/obligations", async (req, res) => {
-  try {
-    const obligation = await createAirtableRecord(process.env.AIRTABLE_TABLE_OBLIGACIONES, req.body);
-    res.json({ ok: true, data: obligation });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/obligations/check-due", async (req, res) => {
-  try {
-    const records = await listAirtableRecords(process.env.AIRTABLE_TABLE_OBLIGACIONES);
-    const dueItems = records
-      .map((r) => {
-        const due = r.FechaProxima || r["Fecha próxima"] || r["Fecha proxima"];
-        const status = statusFromDueDate(due);
-        return { ...r, due, status };
-      })
-      .filter((r) => ["Vencido", "Urgente", "Próximo"].includes(r.status));
-
-    if (process.env.N8N_WEBHOOK_VENCIMIENTOS) {
-      await axios.post(process.env.N8N_WEBHOOK_VENCIMIENTOS, { dueItems });
-    }
-
-    res.json({ ok: true, count: dueItems.length, data: dueItems });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/whatsapp/send", async (req, res) => {
-  try {
-    const { to, message } = req.body;
-    if (!to || !message) return res.status(400).json({ ok: false, error: "Falta to o message" });
-
-    const result = await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_FROM,
-      to: `whatsapp:${to}`,
-      body: message,
-    });
-
-    res.json({ ok: true, sid: result.sid });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/whatsapp/send-due-alert", async (req, res) => {
-  try {
-    const { to, station, title, due, status, owner } = req.body;
-    const message = buildWhatsAppMessage({ station, title, due, status, owner });
-
-    const result = await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_FROM,
-      to: `whatsapp:${to}`,
-      body: message,
-    });
-
-    res.json({ ok: true, sid: result.sid, message });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
-  try {
-    const fileMetadata = {
-      name: req.file.originalname,
-      parents: [process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
-    };
-
-    const media = {
-      mimeType: req.file.mimetype,
-      body: fs.createReadStream(req.file.path),
-    };
-
-    const driveResponse = await drive.files.create({
-      resource: fileMetadata,
-      media,
-      fields: "id",
-    });
-
-    const fileId = driveResponse.data.id;
-
-    await drive.permissions.create({
-      fileId,
-      requestBody: {
-        role: "reader",
-        type: "anyone",
-      },
-    });
-
-    const fileUrl = `https://drive.google.com/file/d/${fileId}/view`;
-
-    await airtableBase(process.env.AIRTABLE_TABLE_EVIDENCIAS).create([
-      {
-        fields: {
-          Nombre: req.file.originalname,
-          URL: fileUrl,
-          Estacion: req.body.estacion,
-          Obligacion: req.body.obligacion,
-          Comentarios: req.body.comentarios || "",
-          Fecha: new Date().toISOString(),
-        },
-      },
-    ]);
-
-    fs.unlinkSync(req.file.path);
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_ESTACIONES
+    );
 
     res.json({
       ok: true,
-      url: fileUrl,
+      data: records,
     });
-
   } catch (error) {
-    console.error(error);
+    console.error("ERROR STATIONS:", error);
 
     res.status(500).json({
       ok: false,
@@ -243,6 +161,201 @@ app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
     });
   }
 });
+
+app.post("/api/stations", async (req, res) => {
+  try {
+    const station = await createAirtableRecord(
+      process.env.AIRTABLE_TABLE_ESTACIONES,
+      req.body
+    );
+
+    res.json({
+      ok: true,
+      data: station,
+    });
+  } catch (error) {
+    console.error("ERROR CREATE STATION:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// OBLIGACIONES
+// =========================
+
+app.get("/api/obligations", async (req, res) => {
+  try {
+    const { station } = req.query;
+
+    const formula = station ? `{EstacionCodigo} = '${station}'` : "";
+
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES,
+      formula
+    );
+
+    const enriched = records.map((r) => {
+      const due =
+        r.FechaProxima || r["Fecha próxima"] || r["Fecha proxima"] || "";
+
+      return {
+        ...r,
+        EstadoCalculado: statusFromDueDate(due),
+      };
+    });
+
+    res.json({
+      ok: true,
+      data: enriched,
+    });
+  } catch (error) {
+    console.error("ERROR OBLIGATIONS:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post("/api/obligations", async (req, res) => {
+  try {
+    const obligation = await createAirtableRecord(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES,
+      req.body
+    );
+
+    res.json({
+      ok: true,
+      data: obligation,
+    });
+  } catch (error) {
+    console.error("ERROR CREATE OBLIGATION:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post("/api/obligations/check-due", async (req, res) => {
+  try {
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES
+    );
+
+    const dueItems = records
+      .map((r) => {
+        const due =
+          r.FechaProxima || r["Fecha próxima"] || r["Fecha proxima"] || "";
+
+        const status = statusFromDueDate(due);
+
+        return {
+          ...r,
+          due,
+          status,
+        };
+      })
+      .filter((r) => ["Vencido", "Urgente", "Próximo"].includes(r.status));
+
+    if (process.env.N8N_WEBHOOK_VENCIMIENTOS) {
+      await axios.post(process.env.N8N_WEBHOOK_VENCIMIENTOS, {
+        dueItems,
+      });
+    }
+
+    res.json({
+      ok: true,
+      count: dueItems.length,
+      data: dueItems,
+    });
+  } catch (error) {
+    console.error("ERROR CHECK DUE:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// WHATSAPP
+// =========================
+
+app.post("/api/whatsapp/send", async (req, res) => {
+  try {
+    const { to, message } = req.body;
+
+    if (!to || !message) {
+      return res.status(400).json({
+        ok: false,
+        error: "Falta to o message",
+      });
+    }
+
+    const result = await twilioClient.messages.create({
+      from: process.env.TWILIO_WHATSAPP_FROM,
+      to: `whatsapp:${to}`,
+      body: message,
+    });
+
+    res.json({
+      ok: true,
+      sid: result.sid,
+    });
+  } catch (error) {
+    console.error("ERROR WHATSAPP:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post("/api/whatsapp/send-due-alert", async (req, res) => {
+  try {
+    const { to, station, title, due, status, owner } = req.body;
+
+    const message = buildWhatsAppMessage({
+      station,
+      title,
+      due,
+      status,
+      owner,
+    });
+
+    const result = await twilioClient.messages.create({
+      from: process.env.TWILIO_WHATSAPP_FROM,
+      to: `whatsapp:${to}`,
+      body: message,
+    });
+
+    res.json({
+      ok: true,
+      sid: result.sid,
+      message,
+    });
+  } catch (error) {
+    console.error("ERROR WHATSAPP ALERT:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// EVIDENCIAS - UPLOAD A DRIVE + AIRTABLE
+// =========================
 
 app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
   try {
@@ -255,51 +368,78 @@ app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
 
     const { estacion, obligacion, comentarios } = req.body;
 
-    const fileName = `${estacion || "SIN_ESTACION"}-${Date.now()}-${req.file.originalname}`;
+    if (!estacion) {
+      return res.status(400).json({
+        ok: false,
+        error: "Falta seleccionar estación",
+      });
+    }
 
-    const driveResponse = await drive.files.create({
-      requestBody: {
-        name: fileName,
-        parents: [process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
-      },
-      media: {
-        mimeType: req.file.mimetype,
-        body: Readable.from(req.file.buffer),
-      },
-      fields: "id, webViewLink",
+    if (!obligacion) {
+      return res.status(400).json({
+        ok: false,
+        error: "Falta seleccionar obligación",
+      });
+    }
+
+    const date = new Date().toISOString().slice(0, 10);
+
+    const cleanOriginalName = req.file.originalname
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9.-]/g, "_")
+    .replace(/_+/g, "_");
+
+    const fileName = `${estacion}-EVID-${date}-${Date.now()}-${cleanOriginalName}`;
+
+    const safeStation = estacion
+    .replace(/[^a-zA-Z0-9-_]/g, "_");
+
+    const filePath = `${safeStation}/${Date.now()}-${cleanOriginalName}`;
+
+    console.log({
+      bucket: process.env.SUPABASE_BUCKET,
+      filePath,
     });
 
-    const fileId = driveResponse.data.id;
-    const fileUrl = driveResponse.data.webViewLink;
+    const { error: uploadError } = await supabase.storage
+      .from(process.env.SUPABASE_BUCKET)
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+      });
 
-    await drive.permissions.create({
-      fileId,
-      requestBody: {
-        role: "reader",
-        type: "anyone",
-      },
-    });
+    if (uploadError) {
+      throw uploadError;
+    }
 
-    await table(process.env.AIRTABLE_TABLE_EVIDENCIAS).create([
+    const { data: publicData } = supabase.storage
+      .from(process.env.SUPABASE_BUCKET)
+      .getPublicUrl(filePath);
+
+    const fileUrl = publicData.publicUrl;
+
+    const evidenceRecord = await createAirtableRecord(
+      process.env.AIRTABLE_TABLE_EVIDENCIAS,
       {
-        fields: {
-          EstacionCodigo: estacion || "",
-          Modulo: "EVIDENCIA",
-          ObligacionId: obligacion || "",
-          Tipo: req.file.mimetype,
-          UsuarioCarga: "Usuario plataforma",
-          FechaCarga: new Date().toISOString().slice(0, 10),
-          DriveFileId: fileId,
-          DriveUrl: fileUrl,
-          NombreArchivo: fileName,
-          Validado: false,
-        },
-      },
-    ]);
+        EstacionCodigo: estacion,
+        Modulo: "EVIDENCIA",
+        ObligacionId: obligacion,
+        Tipo: req.file.mimetype,
+        UsuarioCarga: "Usuario plataforma",
+        FechaCarga: date,
+        URL: fileUrl,
+        Nombre: fileName,
+        NombreArchivo: fileName,
+        Validado: false,
+      }
+    );
 
     res.json({
       ok: true,
+      message: "Evidencia subida correctamente",
       url: fileUrl,
+      evidence: evidenceRecord,
+      comentarios: comentarios || "",
     });
   } catch (error) {
     console.error("ERROR UPLOAD:", error);
@@ -310,6 +450,34 @@ app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
     });
   }
 });
+
+// =========================
+// EVIDENCIAS - LISTAR
+// =========================
+
+app.get("/api/evidence", async (req, res) => {
+  try {
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_EVIDENCIAS
+    );
+
+    res.json({
+      ok: true,
+      data: records,
+    });
+  } catch (error) {
+    console.error("ERROR EVIDENCE:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+// =========================
+// IA
+// =========================
 
 app.post("/api/ai/classify-evidence", async (req, res) => {
   try {
@@ -332,28 +500,51 @@ Devuelve únicamente JSON válido con esta estructura:
 }
 
 Nombre archivo: ${fileName || "No disponible"}
+
 Texto extraído:
 ${text || "No disponible"}
 `;
 
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
       temperature: 0.1,
     });
 
-    res.json({ ok: true, data: completion.choices[0].message.content });
+    res.json({
+      ok: true,
+      data: completion.choices[0].message.content,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR AI CLASSIFY:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
 app.post("/api/ai/generate-ied", async (req, res) => {
   try {
-    const { stationCode, period, kpis, findings, incidents, obligations, evidenceSummary } = req.body;
+    const {
+      stationCode,
+      period,
+      kpis,
+      findings,
+      incidents,
+      obligations,
+      evidenceSummary,
+    } = req.body;
 
     const prompt = `
 Genera un borrador profesional del Informe de Evaluación del Desempeño SASISOPA para una estación de servicio.
+
 Debe estar redactado en español formal, con estructura ejecutiva y enfoque regulatorio.
 
 Datos:
@@ -382,69 +573,148 @@ Estructura requerida:
 
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
       temperature: 0.2,
     });
 
-    res.json({ ok: true, data: completion.choices[0].message.content });
+    res.json({
+      ok: true,
+      data: completion.choices[0].message.content,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR AI IED:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
+
+// =========================
+// AUDITORÍAS
+// =========================
 
 app.post("/api/audits/create", async (req, res) => {
   try {
-    const audit = await createAirtableRecord(process.env.AIRTABLE_TABLE_AUDITORIAS, req.body);
+    const audit = await createAirtableRecord(
+      process.env.AIRTABLE_TABLE_AUDITORIAS,
+      req.body
+    );
 
     if (process.env.N8N_WEBHOOK_AUDITORIAS) {
-      await axios.post(process.env.N8N_WEBHOOK_AUDITORIAS, { audit });
+      await axios.post(process.env.N8N_WEBHOOK_AUDITORIAS, {
+        audit,
+      });
     }
 
-    res.json({ ok: true, data: audit });
+    res.json({
+      ok: true,
+      data: audit,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR CREATE AUDIT:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
+// =========================
+// HALLAZGOS
+// =========================
+
 app.post("/api/findings/create", async (req, res) => {
   try {
-    const finding = await createAirtableRecord(process.env.AIRTABLE_TABLE_HALLAZGOS, req.body);
-    res.json({ ok: true, data: finding });
+    const finding = await createAirtableRecord(
+      process.env.AIRTABLE_TABLE_HALLAZGOS,
+      req.body
+    );
+
+    res.json({
+      ok: true,
+      data: finding,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR CREATE FINDING:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
 app.get("/api/findings", async (req, res) => {
   try {
-    const records = await listAirtableRecords(process.env.AIRTABLE_TABLE_HALLAZGOS);
-    res.json({ ok: true, data: records });
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_HALLAZGOS
+    );
+
+    res.json({
+      ok: true,
+      data: records,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR FINDINGS:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
+// =========================
+// KPIs
+// =========================
+
 app.get("/api/kpis/summary", async (req, res) => {
   try {
-    const obligations = await listAirtableRecords(process.env.AIRTABLE_TABLE_OBLIGACIONES);
-    const findings = await listAirtableRecords(process.env.AIRTABLE_TABLE_HALLAZGOS);
-    const evidence = await listAirtableRecords(process.env.AIRTABLE_TABLE_EVIDENCIAS);
+    const obligations = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES
+    );
+
+    const findings = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_HALLAZGOS
+    );
+
+    const evidence = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_EVIDENCIAS
+    );
 
     const totalObligations = obligations.length;
+
     const overdue = obligations.filter((o) => {
-      const due = o.FechaProxima || o["Fecha próxima"] || o["Fecha proxima"];
+      const due =
+        o.FechaProxima || o["Fecha próxima"] || o["Fecha proxima"] || "";
+
       return statusFromDueDate(due) === "Vencido";
     }).length;
 
-    const openFindings = findings.filter((f) => ["Abierto", "En corrección"].includes(f.Estatus)).length;
-    const validatedEvidence = evidence.filter((e) => e.Validado === true).length;
+    const openFindings = findings.filter((f) =>
+      ["Abierto", "En corrección"].includes(f.Estatus)
+    ).length;
+
+    const validatedEvidence = evidence.filter(
+      (e) => e.Validado === true
+    ).length;
 
     res.json({
       ok: true,
       data: {
         totalObligations,
         overdue,
-        complianceRate: totalObligations ? Math.round(((totalObligations - overdue) / totalObligations) * 100) : 0,
+        complianceRate: totalObligations
+          ? Math.round(((totalObligations - overdue) / totalObligations) * 100)
+          : 0,
         totalFindings: findings.length,
         openFindings,
         totalEvidence: evidence.length,
@@ -452,9 +722,18 @@ app.get("/api/kpis/summary", async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR KPIS:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
+
+// =========================
+// ARRANQUE
+// =========================
 
 app.listen(PORT, () => {
   console.log(`SASISOPA IA Backend activo en http://localhost:${PORT}`);
