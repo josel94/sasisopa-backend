@@ -244,50 +244,70 @@ app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
   }
 });
 
-app.post("/api/evidence/upload", upload.single("file"), async (req, res) => {
+app.post("/api/upload-evidence", upload.single("file"), async (req, res) => {
   try {
-    const { stationCode, moduleCode, obligationId, evidenceType, uploadedBy } = req.body;
-    if (!req.file) return res.status(400).json({ ok: false, error: "No se recibió archivo" });
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false,
+        error: "No se recibió archivo",
+      });
+    }
 
-    const drive = getDriveClient();
-    const date = new Date().toISOString().slice(0, 10);
-    const safeName = `${stationCode}-${moduleCode}-${date}-${evidenceType}-${req.file.originalname}`;
+    const { estacion, obligacion, comentarios } = req.body;
 
-    const uploadResult = await drive.files.create({
+    const fileName = `${estacion || "SIN_ESTACION"}-${Date.now()}-${req.file.originalname}`;
+
+    const driveResponse = await drive.files.create({
       requestBody: {
-        name: safeName,
+        name: fileName,
         parents: [process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
       },
       media: {
         mimeType: req.file.mimetype,
-        body: Buffer.from(req.file.buffer),
+        body: Readable.from(req.file.buffer),
       },
-      fields: "id, name, webViewLink, webContentLink",
+      fields: "id, webViewLink",
     });
 
-    const evidenceRecord = await createAirtableRecord(process.env.AIRTABLE_TABLE_EVIDENCIAS, {
-      EstacionCodigo: stationCode,
-      Modulo: moduleCode,
-      ObligacionId: obligationId,
-      Tipo: evidenceType,
-      UsuarioCarga: uploadedBy,
-      FechaCarga: date,
-      DriveFileId: uploadResult.data.id,
-      DriveUrl: uploadResult.data.webViewLink,
-      NombreArchivo: safeName,
-      Validado: false,
+    const fileId = driveResponse.data.id;
+    const fileUrl = driveResponse.data.webViewLink;
+
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: "reader",
+        type: "anyone",
+      },
     });
 
-    if (process.env.N8N_WEBHOOK_EVIDENCIAS) {
-      await axios.post(process.env.N8N_WEBHOOK_EVIDENCIAS, {
-        evidence: evidenceRecord,
-        drive: uploadResult.data,
-      });
-    }
+    await table(process.env.AIRTABLE_TABLE_EVIDENCIAS).create([
+      {
+        fields: {
+          EstacionCodigo: estacion || "",
+          Modulo: "EVIDENCIA",
+          ObligacionId: obligacion || "",
+          Tipo: req.file.mimetype,
+          UsuarioCarga: "Usuario plataforma",
+          FechaCarga: new Date().toISOString().slice(0, 10),
+          DriveFileId: fileId,
+          DriveUrl: fileUrl,
+          NombreArchivo: fileName,
+          Validado: false,
+        },
+      },
+    ]);
 
-    res.json({ ok: true, data: { drive: uploadResult.data, evidence: evidenceRecord } });
+    res.json({
+      ok: true,
+      url: fileUrl,
+    });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
+    console.error("ERROR UPLOAD:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
 });
 
