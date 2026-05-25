@@ -189,31 +189,48 @@ app.post("/api/stations", async (req, res) => {
 
 app.get("/api/obligations", async (req, res) => {
   try {
-    const { station } = req.query;
+    const obligaciones = await base("Obligaciones")
+      .select({})
+      .all();
 
-    const formula = station ? `{EstacionCodigo} = '${station}'` : "";
+    const evidencias = await base("Evidencias")
+      .select({})
+      .all();
 
-    const records = await listAirtableRecords(
-      process.env.AIRTABLE_TABLE_OBLIGACIONES,
-      formula
-    );
+    const evidenciasMap = {};
 
-    const enriched = records.map((r) => {
-      const due =
-        r.FechaProxima || r["Fecha próxima"] || r["Fecha proxima"] || "";
+    evidencias.forEach((ev) => {
+      const fields = ev.fields;
+
+      const key = `${fields.EstacionCodigo}-${fields.Obligacion}`;
+
+      evidenciasMap[key] = {
+        tiene: true,
+        url: fields.URL || "",
+      };
+    });
+
+    const data = obligaciones.map((o) => {
+      const fields = o.fields;
+
+      const key = `${fields.EstacionCodigo}-${fields.Nombre}`;
+
+      const evidencia = evidenciasMap[key];
 
       return {
-        ...r,
-        EstadoCalculado: statusFromDueDate(due),
+        id: o.id,
+        ...fields,
+        TieneEvidencia: evidencia?.tiene || false,
+        EvidenciaURL: evidencia?.url || "",
       };
     });
 
     res.json({
       ok: true,
-      data: enriched,
+      data,
     });
   } catch (error) {
-    console.error("ERROR OBLIGATIONS:", error);
+    console.error(error);
 
     res.status(500).json({
       ok: false,
