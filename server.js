@@ -189,37 +189,35 @@ app.post("/api/stations", async (req, res) => {
 
 app.get("/api/obligations", async (req, res) => {
   try {
-    const obligaciones = await base("Obligaciones")
-      .select({})
-      .all();
+    const obligaciones = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES
+    );
 
-    const evidencias = await base("Evidencias")
-      .select({})
-      .all();
+    const evidencias = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_EVIDENCIAS
+    );
 
     const evidenciasMap = {};
 
     evidencias.forEach((ev) => {
-      const fields = ev.fields;
-
-      const key = `${fields.EstacionCodigo}-${fields.Obligacion}`;
+      const key = `${ev.EstacionCodigo}-${ev.ObligacionId}`;
 
       evidenciasMap[key] = {
         tiene: true,
-        url: fields.URL || "",
+        url: ev.URL || ev.ArchivoURL || "",
       };
     });
 
     const data = obligaciones.map((o) => {
-      const fields = o.fields;
+      const due =
+        o.FechaProxima || o["Fecha próxima"] || o["Fecha proxima"] || "";
 
-      const key = `${fields.EstacionCodigo}-${fields.Nombre}`;
-
+      const key = `${o.EstacionCodigo}-${o.Nombre}`;
       const evidencia = evidenciasMap[key];
 
       return {
-        id: o.id,
-        ...fields,
+        ...o,
+        EstadoCalculado: statusFromDueDate(due),
         TieneEvidencia: evidencia?.tiene || false,
         EvidenciaURL: evidencia?.url || "",
       };
@@ -230,7 +228,7 @@ app.get("/api/obligations", async (req, res) => {
       data,
     });
   } catch (error) {
-    console.error(error);
+    console.error("ERROR OBLIGATIONS:", error);
 
     res.status(500).json({
       ok: false,
