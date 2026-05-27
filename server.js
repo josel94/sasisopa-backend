@@ -746,6 +746,96 @@ app.get("/api/kpis/summary", async (req, res) => {
   }
 });
 
+function addFrequency(date, frecuencia) {
+  const d = new Date(date);
+
+  if (frecuencia === "Diario") d.setDate(d.getDate() + 1);
+  if (frecuencia === "Semanal") d.setDate(d.getDate() + 7);
+  if (frecuencia === "Mensual") d.setMonth(d.getMonth() + 1);
+  if (frecuencia === "Bimestral") d.setMonth(d.getMonth() + 2);
+  if (frecuencia === "Trimestral") d.setMonth(d.getMonth() + 3);
+  if (frecuencia === "Semestral") d.setMonth(d.getMonth() + 6);
+  if (frecuencia === "Anual") d.setFullYear(d.getFullYear() + 1);
+
+  return d.toISOString().slice(0, 10);
+}
+
+app.post("/api/programaciones/generar", async (req, res) => {
+  try {
+    const { estacionCodigo, fechaInicio } = req.body;
+
+    if (!estacionCodigo) {
+      return res.status(400).json({
+        ok: false,
+        error: "Falta estacionCodigo",
+      });
+    }
+
+    const inicio = fechaInicio || new Date().toISOString().slice(0, 10);
+
+    const maestras = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_OBLIGACIONES_MAESTRO
+    );
+
+    const activas = maestras.filter((m) => m.Activa === true);
+
+    const creadas = [];
+
+    for (const m of activas) {
+      const fechaVencimiento = addFrequency(inicio, m.Frecuencia);
+
+      const record = await createAirtableRecord(
+        process.env.AIRTABLE_TABLE_PROGRAMACIONES,
+        {
+          EstacionCodigo: estacionCodigo,
+          Obligacion: m.Nombre,
+          Categoria: m.Categoria,
+          Frecuencia: m.Frecuencia,
+          Responsable: m.Responsable,
+          FechaVencimiento: fechaVencimiento,
+          Estado: "Pendiente",
+          Critica: m.Critica === true,
+        }
+      );
+
+      creadas.push(record);
+    }
+
+    res.json({
+      ok: true,
+      count: creadas.length,
+      data: creadas,
+    });
+  } catch (error) {
+    console.error("ERROR GENERAR PROGRAMACIONES:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/programaciones", async (req, res) => {
+  try {
+    const records = await listAirtableRecords(
+      process.env.AIRTABLE_TABLE_PROGRAMACIONES
+    );
+
+    res.json({
+      ok: true,
+      data: records,
+    });
+  } catch (error) {
+    console.error("ERROR PROGRAMACIONES:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
 // =========================
 // ARRANQUE
 // =========================
@@ -753,3 +843,4 @@ app.get("/api/kpis/summary", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`SASISOPA IA Backend activo en http://localhost:${PORT}`);
 });
+
